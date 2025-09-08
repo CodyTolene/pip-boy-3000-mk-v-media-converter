@@ -1,67 +1,17 @@
 import queue
-import shutil
 import subprocess
-import sys
-from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 
 from lib.music.music_tab import MusicTab
 from lib.video.video_tab import VideoTab
+from lib.common.ffmpeg_tools import resolve_ffmpeg_path
+from lib.common.os_utils import _no_console_kwargs
 
 APP_TITLE = "Pip-Boy 3000 Mk V - Media Conversion Tool"
 APP_VERSION = "1.0.0"
 
-
-def _app_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        # Running from bundled EXE (PyInstaller)
-        return Path(getattr(sys, "_MEIPASS", Path.cwd()))
-    return Path(__file__).resolve().parent
-
-
-def _bin_candidate(exe_name: str) -> Path:
-    # exe_name should include extension on Windows (e.g., "ffmpeg.exe")
-    return _app_base_dir() / "bin" / exe_name
-
-
-def _no_console_kwargs() -> dict:
-    try:
-        if sys.platform.startswith("win"):
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            return {"startupinfo": si, "creationflags": subprocess.CREATE_NO_WINDOW}
-    except Exception:
-        pass
-    return {}
-
-
-def resolve_tool(preferred_name_with_ext: str, path_name_no_ext: str) -> str:
-    # Prefer local bin copy
-    local_path = _bin_candidate(preferred_name_with_ext)
-    if local_path.exists():
-        return str(local_path)
-
-    # Fall back to system PATH
-    found = shutil.which(path_name_no_ext)
-    if found:
-        return found
-
-    # Last resort: return the bin path we expected
-    return str(local_path)
-
-
-def resolve_ffmpeg_path() -> str:
-    # Windows build ships ffmpeg.exe; PATH fallback is "ffmpeg"
-    return resolve_tool("ffmpeg.exe", "ffmpeg")
-
-
-def resolve_ffprobe_path() -> str:
-    return resolve_tool("ffprobe.exe", "ffprobe")
-
-
 FFMPEG_CMD = resolve_ffmpeg_path()
-FFPROBE_CMD = resolve_ffprobe_path()
 
 
 class PipMediaApp(tk.Tk):
@@ -70,7 +20,7 @@ class PipMediaApp(tk.Tk):
         self.title(f"{APP_TITLE} (v{APP_VERSION})")
         self.geometry("980x640")
 
-        # Per-tab queues so logs don't "eat" each other
+        # Per-tab queues so logs don't collide
         self.music_log_q: queue.Queue[str] = queue.Queue()
         self.video_log_q: queue.Queue[str] = queue.Queue()
 
@@ -148,16 +98,12 @@ class PipMediaApp(tk.Tk):
     def _wire_tabs(self):
         # Each tab builds its own UI, including progress, buttons, and log
         self.music_tab = MusicTab(
-            self.nb,
-            log_q=self.music_log_q,
-            ffmpeg_cmd=FFMPEG_CMD,
+            self.nb, log_q=self.music_log_q, ffmpeg_cmd=FFMPEG_CMD
         )
         self.nb.add(self.music_tab, text="Music")
 
         self.video_tab = VideoTab(
-            self.nb,
-            log_q=self.video_log_q,
-            ffmpeg_cmd=FFMPEG_CMD,
+            self.nb, log_q=self.video_log_q, ffmpeg_cmd=FFMPEG_CMD
         )
         self.nb.add(self.video_tab, text="Video")
 

@@ -1,13 +1,13 @@
 import os
 import threading
 import queue
-import subprocess
-import sys
 from pathlib import Path
 import tempfile
 import tkinter as tk
 from tkinter import ttk, filedialog
-import subprocess as _sp
+
+from lib.common.ffmpeg_tools import FFmpegProcess
+from lib.common.os_utils import open_folder
 
 VIDEO_EXTENSIONS = (
     ".mp4",
@@ -33,41 +33,9 @@ VIDEO_FILETYPES = [
 TARGET_W = 480
 TARGET_H = 320
 TARGET_FPS = 12
-TARGET_V_BITRATE = "200k"  # ~200 kbps video
-TARGET_A_RATE = "16000"  # 16 kHz
+TARGET_V_BITRATE = "200k"  # not used by msrle, kept for future codecs
+TARGET_A_RATE = "11025"  # 11.025 kHz
 TARGET_A_CHANNELS = "1"  # mono
-
-
-def _no_console_kwargs() -> dict:
-    try:
-        if os.name == "nt":
-            si = _sp.STARTUPINFO()
-            si.dwFlags |= _sp.STARTF_USESHOWWINDOW
-            return {"startupinfo": si, "creationflags": _sp.CREATE_NO_WINDOW}
-    except Exception:
-        pass
-    return {}
-
-
-class FFmpegProcess:
-    def __init__(self, ffmpeg_cmd: str, log_q: queue.Queue):
-        self.ffmpeg, self.log_q = ffmpeg_cmd, log_q
-
-    def run(self, args: list[str]) -> int:
-        try:
-            proc = subprocess.Popen(
-                args,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                **_no_console_kwargs(),
-            )
-            for line in proc.stderr:
-                self.log_q.put(line.strip())
-            return proc.wait()
-        except Exception as e:
-            self.log_q.put(f"[ERROR] {e}")
-            return 1
 
 
 class VideoTab(ttk.Frame):
@@ -80,7 +48,7 @@ class VideoTab(ttk.Frame):
         self.files: list[Path] = []
         self._known_paths: set[str] = set()
         self._last_dir = str(Path.home())
-        self._refreshing = False  # guard to avoid re-entrant listbox events
+        self._refreshing = False
 
         # Preview
         self._preview_tmp: Path | None = None
@@ -510,42 +478,35 @@ class VideoTab(ttk.Frame):
         path = self.output_dir_var.get().strip()
         if not path:
             return
-        p = Path(path)
-        if not (p.exists() and p.is_dir()):
-            return
-        try:
-            if os.name == "nt":
-                os.startfile(str(p))
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(p)], **_no_console_kwargs())
-            else:
-                subprocess.Popen(["xdg-open", str(p)], **_no_console_kwargs())
-        except Exception as e:
-            self.log_q.put(f"[ERROR] Could not open folder: {e}")
+        open_folder(Path(path))
 
-    def _vf(self, include_fps: bool = True) -> str:
+    def _vf(self, include_fps: bool = False) -> str:
         mode = (self.scale_mode.get() or "").lower()
 
         if mode == "custom":
             w, h = self._get_custom_size()
             core = f"scale={w}:{h},setsar=1"
-            return f"{core},fps={TARGET_FPS}" if include_fps else core
-
-        w, h = TARGET_W, TARGET_H
-        if "stretch" in mode:
-            core = f"scale={w}:{h},setsar=1"
-        elif "cover" in mode or "fill" in mode:
-            s = f"max({w}/iw\\,{h}/ih)"
-            we = f"trunc(iw*{s}/2)*2"
-            he = f"trunc(ih*{s}/2)*2"
-            core = f"scale={we}:{he},setsar=1,crop={w}:{h}"
         else:
-            s = f"min({w}/iw\\,{h}/ih)"
-            we = f"trunc(iw*{s}/2)*2"
-            he = f"trunc(ih*{s}/2)*2"
-            core = f"scale={we}:{he},setsar=1,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
+            w, h = TARGET_W, TARGET_H
+            if "stretch" in mode:
+                core = f"scale={w}:{h},setsar=1"
+            elif "cover" in mode or "fill" in mode:
+                s = f"max({w}/iw\\,{h}/ih)"
+                we = f"trunc(iw*{s}/2)*2"
+                he = f"trunc(ih*{s}/2)*2"
+                core = f"scale={we}:{he},setsar=1,crop={w}:{h}"
+            else:
+                s = f"min({w}/iw\\,{h}/ih)"
+                we = f"trunc(iw*{s}/2)*2"
+                he = f"trunc(ih*{s}/2)*2"
+                core = f"scale={we}:{he},setsar=1,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
 
-        return f"{core},fps={TARGET_FPS}" if include_fps else core
+        # Color format required by device workflow
+        core = f"{core},format=rgb555le"
+
+        if include_fps:
+            core = f"{core},fps={TARGET_FPS}"
+        return core
 
     def _get_custom_size(self) -> tuple[int, int]:
         def _parse(v: str, fallback: int) -> int:
@@ -553,6 +514,7 @@ class VideoTab(ttk.Frame):
                 n = int(v.strip())
                 if n <= 0:
                     raise ValueError
+                # keep even for pal8/yuv-style alignments
                 if n % 2 == 1:
                     n -= 1
                 if n <= 0:
@@ -592,7 +554,7 @@ class VideoTab(ttk.Frame):
                 dst = Path(out_dir) / f"{src.stem}.avi"
                 self.log_q.put(f"[*] Converting {src.name} -> {dst.name}")
 
-                vf = self._vf(include_fps=True)
+                vf = self._vf(include_fps=False)
 
                 cmd = [
                     self.ff.ffmpeg,
@@ -603,16 +565,16 @@ class VideoTab(ttk.Frame):
                     "-y",
                     "-i",
                     str(src),
-                    # Video
+                    # Video (Pip-Boy recipe)
                     "-vf",
                     vf,
+                    "-r",
+                    str(TARGET_FPS),
                     "-c:v",
-                    "mpeg4",
-                    "-b:v",
-                    TARGET_V_BITRATE,
+                    "msrle",
                     "-pix_fmt",
-                    "yuv420p",
-                    # Audio
+                    "pal8",
+                    # Audio (mono 11.025 kHz, 16-bit PCM)
                     "-ac",
                     TARGET_A_CHANNELS,
                     "-ar",

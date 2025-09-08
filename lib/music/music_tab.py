@@ -3,11 +3,13 @@ import threading
 import queue
 import subprocess
 import signal
-import sys
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog
-import subprocess as _sp
+
+from lib.common.ffmpeg_tools import FFmpegProcess, Probe
+from lib.common.os_utils import _no_console_kwargs, open_folder
+from lib.common.utils import fmt_bytes, fmt_hms, PathTools
 
 AUDIO_OUT_RATE = "16000"
 AUDIO_OUT_CHANNELS = "1"
@@ -35,124 +37,8 @@ AUDIO_FILETYPES = [
 ]
 
 
-def _no_console_kwargs() -> dict:
-    try:
-        if os.name == "nt":
-            si = _sp.STARTUPINFO()
-            si.dwFlags |= _sp.STARTF_USESHOWWINDOW
-            return {"startupinfo": si, "creationflags": _sp.CREATE_NO_WINDOW}
-    except Exception:
-        pass
-    return {}
-
-
-def fmt_bytes(n: int | None) -> str:
-    if not n or n <= 0:
-        return "N/A"
-    mb = n / (1024 * 1024)
-    return f"{mb:.2f} MB"
-
-
-def fmt_hms(seconds: float | None) -> str:
-    if seconds is None or seconds <= 0:
-        return "N/A"
-    total = int(round(seconds))
-    h, m, s = total // 3600, (total % 3600) // 60, total % 60
-    return f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:d}:{s:02d}"
-
-
 def is_audio(path: Path) -> bool:
     return path.suffix.lower() in set(AUDIO_EXTENSIONS)
-
-
-class PathTools:
-    @staticmethod
-    def normalize(p: Path) -> str:
-        try:
-            abs_path = os.path.abspath(str(p))
-        except Exception:
-            abs_path = str(p)
-        return os.path.normcase(abs_path)
-
-
-class Probe:
-    def __init__(self, ffmpeg_cmd: str):
-        self.ffprobe = self._guess_ffprobe(ffmpeg_cmd)
-
-    @staticmethod
-    def _guess_ffprobe(ffmpeg_cmd: str) -> str:
-        try:
-            p = Path(ffmpeg_cmd)
-            name = p.name.lower()
-            if name.startswith("ffmpeg"):
-                candidate = p.with_name(name.replace("ffmpeg", "ffprobe"))
-                if candidate.exists():
-                    return str(candidate)
-        except Exception:
-            pass
-        return "ffprobe"
-
-    def duration(self, src: Path) -> float | None:
-        try:
-            cmd = [
-                self.ffprobe,
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(src),
-            ]
-            out = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-            )
-            val = out.stdout.strip()
-            return float(val) if val else None
-        except Exception:
-            return None
-
-
-class FFmpegProcess:
-    def __init__(self, ffmpeg_cmd: str, log_q: queue.Queue):
-        self.ffmpeg = ffmpeg_cmd
-        self.log_q = log_q
-
-    def run(self, args: list[str]) -> int:
-        try:
-            proc = subprocess.Popen(
-                args,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                **_no_console_kwargs(),
-            )
-            for line in proc.stderr:
-                self.log_q.put(line.strip())
-            return proc.wait()
-        except Exception as e:
-            self.log_q.put(f"[ERROR] {e}")
-            return 1
-
-    @staticmethod
-    def guess_ffplay(ffmpeg_cmd: str) -> str:
-        """
-        Try to derive an ffplay path from the provided ffmpeg path.
-        Fallback to 'ffplay' on PATH.
-        """
-        try:
-            p = Path(ffmpeg_cmd)
-            name = p.name
-            if name.lower().startswith("ffmpeg"):
-                candidate = p.with_name(name.replace("ffmpeg", "ffplay"))
-                if candidate.exists():
-                    return str(candidate)
-        except Exception:
-            pass
-        return "ffplay"
 
 
 class MusicTab(ttk.Frame):
@@ -470,7 +356,7 @@ class MusicTab(ttk.Frame):
         # Build ffplay command
         af = self._af()
         cmd = [
-            self.ffplay_cmd,
+            FFmpegProcess.guess_ffplay(self.ff.ffmpeg),
             "-nodisp",
             "-autoexit",
             "-vn",
@@ -484,7 +370,7 @@ class MusicTab(ttk.Frame):
 
         self.log_q.put(
             f"[*] Previewing {src.name} for ~{PREVIEW_SECONDS}s "
-            + f"({' '.join(af) if af else 'no gain'})"
+            + (f"({' '.join(af)})" if af else "(no gain)")
         )
         try:
             self._preview_proc = subprocess.Popen(
@@ -502,7 +388,7 @@ class MusicTab(ttk.Frame):
             self._preview_proc = None
             self.log_q.put(f"[ERROR] Preview failed to start: {e}")
 
-        # Re enable controls when finished
+        # Re-enable controls when finished
         if self._preview_proc is not None:
             self.stop_btn.config(state="normal")
             self.play_btn.config(state="disabled")
@@ -545,18 +431,7 @@ class MusicTab(ttk.Frame):
         path = self.output_dir_var.get().strip()
         if not path:
             return
-        p = Path(path)
-        if not (p.exists() and p.is_dir()):
-            return
-        try:
-            if os.name == "nt":
-                os.startfile(str(p))
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(p)], **_no_console_kwargs())
-            else:
-                subprocess.Popen(["xdg-open", str(p)], **_no_console_kwargs())
-        except Exception as e:
-            self.log_q.put(f"[ERROR] Could not open folder: {e}")
+        open_folder(Path(path))
 
     def add_files(self, listbox: tk.Listbox, store: list[Path]):
         try:
@@ -577,9 +452,10 @@ class MusicTab(ttk.Frame):
         self._last_dir = str(Path(paths[0]).parent)
 
         picked: list[Path] = []
+        ext_set = set(AUDIO_EXTENSIONS)
         for raw in paths:
             p = Path(raw)
-            if not is_audio(p):
+            if p.suffix.lower() not in ext_set:
                 continue
             key = PathTools.normalize(p)
             if key in self._known_paths:
