@@ -284,7 +284,7 @@ class VideoTab(ttk.Frame):
             self.after(0, lambda: self._preview_show_text("No preview"))
             return
 
-        vf = self._vf(include_fps=False)
+        vf = self._vf()
 
         try:
             if self._preview_tmp is None:
@@ -293,8 +293,8 @@ class VideoTab(ttk.Frame):
             else:
                 try:
                     self._preview_tmp.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.log_q.put(f"[ERROR] Failed to delete preview tmp file: {e!r}")
 
             cmd = [
                 self.ff.ffmpeg,
@@ -480,7 +480,7 @@ class VideoTab(ttk.Frame):
             return
         open_folder(Path(path))
 
-    def _vf(self, include_fps: bool = False) -> str:
+    def _vf(self) -> str:
         mode = (self.scale_mode.get() or "").lower()
 
         if mode == "custom":
@@ -504,8 +504,6 @@ class VideoTab(ttk.Frame):
         # Color format required by device workflow
         core = f"{core},format=rgb555le"
 
-        if include_fps:
-            core = f"{core},fps={TARGET_FPS}"
         return core
 
     def _get_custom_size(self) -> tuple[int, int]:
@@ -554,7 +552,7 @@ class VideoTab(ttk.Frame):
                 dst = Path(out_dir) / f"{src.stem}.avi"
                 self.log_q.put(f"[*] Converting {src.name} -> {dst.name}")
 
-                vf = self._vf(include_fps=False)
+                vf = self._vf()
 
                 cmd = [
                     self.ff.ffmpeg,

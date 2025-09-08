@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def fmt_bytes(n: int | None) -> str:
-    if not n or n <= 0:
+    if n is None or n < 0:
         return "N/A"
     mb = n / (1024 * 1024)
     return f"{mb:.2f} MB"
