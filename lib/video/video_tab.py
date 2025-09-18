@@ -30,11 +30,16 @@ VIDEO_FILETYPES = [
     ("All files", "*.*"),
 ]
 
-TARGET_W = 480
-TARGET_H = 320
+# 480x320 = Full Screen
+# 408x248 = Map Size
+# 340x210 = PipTube Video Player Size
+
+TARGET_W = 340
+TARGET_H = 210
 TARGET_FPS = 12
-TARGET_V_BITRATE = "200k"  # not used by msrle, kept for future codecs
-TARGET_A_RATE = "11025"  # 11.025 kHz
+
+# Audio
+TARGET_A_RATE = "16000"  # 16 kHz
 TARGET_A_CHANNELS = "1"  # mono
 
 
@@ -189,9 +194,6 @@ class VideoTab(ttk.Frame):
         )
         self.custom_h_entry.pack(side="left", padx=(2, 0))
 
-        # Initialize visibility
-        self._toggle_custom_inputs()
-
         # Progress bar
         bottom = ttk.Frame(self)
         bottom.grid(row=3, column=0, columnspan=3, sticky="we", padx=10, pady=(0, 6))
@@ -214,6 +216,9 @@ class VideoTab(ttk.Frame):
 
         self.after(75, self._drain_log)
         self.update_controls()
+
+        # Initialize visibility
+        self._toggle_custom_inputs()
 
     def _append_log(self, text: str):
         self.log_text.configure(state="normal")
@@ -284,12 +289,13 @@ class VideoTab(ttk.Frame):
             self.after(0, lambda: self._preview_show_text("No preview"))
             return
 
-        vf = self._vf()
+        vf = self._vf_preview()
 
         try:
             if self._preview_tmp is None:
-                tmp_dir = Path(tempfile.gettempdir())
-                self._preview_tmp = tmp_dir / f"pipboy_preview_{os.getpid()}.png"
+                self._preview_tmp = (
+                    Path(tempfile.gettempdir()) / f"pipboy_preview_{os.getpid()}.png"
+                )
             else:
                 try:
                     self._preview_tmp.unlink(missing_ok=True)
@@ -480,31 +486,35 @@ class VideoTab(ttk.Frame):
             return
         open_folder(Path(path))
 
-    def _vf(self) -> str:
+    def _vf_core(self) -> str:
         mode = (self.scale_mode.get() or "").lower()
+        w, h = TARGET_W, TARGET_H
 
         if mode == "custom":
             w, h = self._get_custom_size()
-            core = f"scale={w}:{h},setsar=1"
+            core = f"scale={w}:{h}:flags=lanczos,setsar=1"
+        elif "stretch" in mode:
+            core = f"scale={w}:{h}:flags=lanczos,setsar=1"
+        elif "cover" in mode or "fill" in mode:
+            s = f"max({w}/iw\\,{h}/ih)"
+            we = f"trunc(iw*{s}/2)*2"
+            he = f"trunc(ih*{s}/2)*2"
+            core = f"scale={we}:{he}:flags=lanczos,setsar=1,crop={w}:{h}"
         else:
-            w, h = TARGET_W, TARGET_H
-            if "stretch" in mode:
-                core = f"scale={w}:{h},setsar=1"
-            elif "cover" in mode or "fill" in mode:
-                s = f"max({w}/iw\\,{h}/ih)"
-                we = f"trunc(iw*{s}/2)*2"
-                he = f"trunc(ih*{s}/2)*2"
-                core = f"scale={we}:{he},setsar=1,crop={w}:{h}"
-            else:
-                s = f"min({w}/iw\\,{h}/ih)"
-                we = f"trunc(iw*{s}/2)*2"
-                he = f"trunc(ih*{s}/2)*2"
-                core = f"scale={we}:{he},setsar=1,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
-
-        # Color format required by device workflow
-        core = f"{core},format=rgb555le"
-
+            s = f"min({w}/iw\\,{h}/ih)"
+            we = f"trunc(iw*{s}/2)*2"
+            he = f"trunc(ih*{s}/2)*2"
+            core = (
+                f"scale={we}:{he}:flags=lanczos,setsar=1,"
+                + f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
+            )
         return core
+
+    def _vf_convert(self) -> str:
+        return f"{self._vf_core()},fps={TARGET_FPS},format=pal8"
+
+    def _vf_preview(self) -> str:
+        return f"{self._vf_core()},format=rgb24"
 
     def _get_custom_size(self) -> tuple[int, int]:
         def _parse(v: str, fallback: int) -> int:
@@ -549,10 +559,10 @@ class VideoTab(ttk.Frame):
         def worker():
             ok = True
             for idx, src in enumerate(self.files, start=1):
-                dst = Path(out_dir) / f"{src.stem}.avi"
+                dst = Path(out_dir) / f"{src.name}.avi"
                 self.log_q.put(f"[*] Converting {src.name} -> {dst.name}")
 
-                vf = self._vf()
+                vf = self._vf_convert()
 
                 cmd = [
                     self.ff.ffmpeg,
@@ -563,23 +573,26 @@ class VideoTab(ttk.Frame):
                     "-y",
                     "-i",
                     str(src),
-                    # Video (Pip-Boy recipe)
                     "-vf",
                     vf,
+                    "-vsync",
+                    "cfr",
                     "-r",
                     str(TARGET_FPS),
                     "-c:v",
                     "msrle",
                     "-pix_fmt",
                     "pal8",
-                    # Audio (mono 11.025 kHz, 16-bit PCM)
                     "-ac",
                     TARGET_A_CHANNELS,
                     "-ar",
                     TARGET_A_RATE,
                     "-c:a",
                     "pcm_s16le",
-                    # Container
+                    "-max_interleave_delta",
+                    "0",
+                    "-use_odml",
+                    "0",
                     "-f",
                     "avi",
                     str(dst),
