@@ -30,11 +30,16 @@ VIDEO_FILETYPES = [
     ("All files", "*.*"),
 ]
 
-TARGET_W = 480
-TARGET_H = 320
+# 480x320 = Full Screen
+# 408x248 = Map Size
+# 340x210 = PipTube Video Player Size
+
+TARGET_W = 340
+TARGET_H = 210
 TARGET_FPS = 12
-TARGET_V_BITRATE = "200k"  # not used by msrle, kept for future codecs
-TARGET_A_RATE = "11025"  # 11.025 kHz
+
+# Audio
+TARGET_A_RATE = "16000"  # 16 kHz
 TARGET_A_CHANNELS = "1"  # mono
 
 
@@ -54,7 +59,7 @@ class VideoTab(ttk.Frame):
         self._preview_tmp: Path | None = None
         self._preview_after_id: str | None = None
         self._preview_target: Path | None = None
-        self._preview_img = None  # keep reference so Tk doesn't GC it
+        self._preview_img = None  # keep reference so Tk does not GC it
 
         # Custom size state
         self.custom_w_var = tk.StringVar(value=str(TARGET_W))
@@ -81,8 +86,14 @@ class VideoTab(ttk.Frame):
             highlightbackground="#a0a0a0",
         )
         self.preview_canvas.pack(side="top")
-        self.preview_note = ttk.Label(self.preview_frame, text="(Preview)")
+
+        # Dynamic size note under the preview
+        self.preview_size_var = tk.StringVar(value=f"{TARGET_W} x {TARGET_H}")
+        self.preview_note = ttk.Label(
+            self.preview_frame, textvariable=self.preview_size_var
+        )
         self.preview_note.pack(side="top", pady=(6, 12))
+
         self._preview_show_text("No preview")
 
         # File list
@@ -160,6 +171,7 @@ class VideoTab(ttk.Frame):
                 self._show_preview()
                 self._schedule_preview_update(debounce=True)
             self._toggle_custom_inputs()
+            self._update_preview_note()
 
         for label, val in [
             ("Contain / Letterbox", "contain"),
@@ -189,9 +201,6 @@ class VideoTab(ttk.Frame):
         )
         self.custom_h_entry.pack(side="left", padx=(2, 0))
 
-        # Initialize visibility
-        self._toggle_custom_inputs()
-
         # Progress bar
         bottom = ttk.Frame(self)
         bottom.grid(row=3, column=0, columnspan=3, sticky="we", padx=10, pady=(0, 6))
@@ -214,6 +223,10 @@ class VideoTab(ttk.Frame):
 
         self.after(75, self._drain_log)
         self.update_controls()
+
+        # Initialize visibility and size note
+        self._toggle_custom_inputs()
+        self._update_preview_note()
 
     def _append_log(self, text: str):
         self.log_text.configure(state="normal")
@@ -284,12 +297,13 @@ class VideoTab(ttk.Frame):
             self.after(0, lambda: self._preview_show_text("No preview"))
             return
 
-        vf = self._vf()
+        vf = self._vf_preview()
 
         try:
             if self._preview_tmp is None:
-                tmp_dir = Path(tempfile.gettempdir())
-                self._preview_tmp = tmp_dir / f"pipboy_preview_{os.getpid()}.png"
+                self._preview_tmp = (
+                    Path(tempfile.gettempdir()) / f"pipboy_preview_{os.getpid()}.png"
+                )
             else:
                 try:
                     self._preview_tmp.unlink(missing_ok=True)
@@ -390,6 +404,7 @@ class VideoTab(ttk.Frame):
         self.open_dir_btn.config(state=("normal" if open_ok else "disabled"))
 
         self._toggle_empty_hint()
+        self._update_preview_note()
 
     def add_files(self):
         try:
@@ -480,31 +495,35 @@ class VideoTab(ttk.Frame):
             return
         open_folder(Path(path))
 
-    def _vf(self) -> str:
+    def _vf_core(self) -> str:
         mode = (self.scale_mode.get() or "").lower()
+        w, h = TARGET_W, TARGET_H
 
         if mode == "custom":
             w, h = self._get_custom_size()
-            core = f"scale={w}:{h},setsar=1"
+            core = f"scale={w}:{h}:flags=lanczos,setsar=1"
+        elif "stretch" in mode:
+            core = f"scale={w}:{h}:flags=lanczos,setsar=1"
+        elif "cover" in mode or "fill" in mode:
+            s = f"max({w}/iw\\,{h}/ih)"
+            we = f"trunc(iw*{s}/2)*2"
+            he = f"trunc(ih*{s}/2)*2"
+            core = f"scale={we}:{he}:flags=lanczos,setsar=1,crop={w}:{h}"
         else:
-            w, h = TARGET_W, TARGET_H
-            if "stretch" in mode:
-                core = f"scale={w}:{h},setsar=1"
-            elif "cover" in mode or "fill" in mode:
-                s = f"max({w}/iw\\,{h}/ih)"
-                we = f"trunc(iw*{s}/2)*2"
-                he = f"trunc(ih*{s}/2)*2"
-                core = f"scale={we}:{he},setsar=1,crop={w}:{h}"
-            else:
-                s = f"min({w}/iw\\,{h}/ih)"
-                we = f"trunc(iw*{s}/2)*2"
-                he = f"trunc(ih*{s}/2)*2"
-                core = f"scale={we}:{he},setsar=1,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
-
-        # Color format required by device workflow
-        core = f"{core},format=rgb555le"
-
+            s = f"min({w}/iw\\,{h}/ih)"
+            we = f"trunc(iw*{s}/2)*2"
+            he = f"trunc(ih*{s}/2)*2"
+            core = (
+                f"scale={we}:{he}:flags=lanczos,setsar=1,"
+                + f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
+            )
         return core
+
+    def _vf_convert(self) -> str:
+        return f"{self._vf_core()},fps={TARGET_FPS},format=pal8"
+
+    def _vf_preview(self) -> str:
+        return f"{self._vf_core()},format=rgb24"
 
     def _get_custom_size(self) -> tuple[int, int]:
         def _parse(v: str, fallback: int) -> int:
@@ -526,6 +545,35 @@ class VideoTab(ttk.Frame):
         self.custom_w_var.set(str(w))
         self.custom_h_var.set(str(h))
         return w, h
+
+    def _peek_custom_size(self) -> tuple[int, int]:
+        """Parse custom W and H without mutating StringVars."""
+
+        def _parse(v: str, fallback: int) -> int:
+            try:
+                n = int(v.strip())
+                if n <= 0:
+                    return fallback
+                if n % 2 == 1:
+                    n -= 1
+                return n if n > 0 else fallback
+            except Exception:
+                return fallback
+
+        return _parse(self.custom_w_var.get(), TARGET_W), _parse(
+            self.custom_h_var.get(), TARGET_H
+        )
+
+    def _current_target_size(self) -> tuple[int, int]:
+        """Report intended output dimensions based on mode."""
+        if (self.scale_mode.get() or "").lower() == "custom":
+            return self._peek_custom_size()
+        return TARGET_W, TARGET_H
+
+    def _update_preview_note(self):
+        """Refresh the label text under the preview to show W x H."""
+        w, h = self._current_target_size()
+        self.preview_size_var.set(f"{w} x {h}")
 
     def start_convert_all(self):
         if self.is_running:
@@ -549,10 +597,10 @@ class VideoTab(ttk.Frame):
         def worker():
             ok = True
             for idx, src in enumerate(self.files, start=1):
-                dst = Path(out_dir) / f"{src.stem}.avi"
+                dst = Path(out_dir) / f"{src.name}.avi"
                 self.log_q.put(f"[*] Converting {src.name} -> {dst.name}")
 
-                vf = self._vf()
+                vf = self._vf_convert()
 
                 cmd = [
                     self.ff.ffmpeg,
@@ -563,23 +611,26 @@ class VideoTab(ttk.Frame):
                     "-y",
                     "-i",
                     str(src),
-                    # Video (Pip-Boy recipe)
                     "-vf",
                     vf,
+                    "-vsync",
+                    "cfr",
                     "-r",
                     str(TARGET_FPS),
                     "-c:v",
                     "msrle",
                     "-pix_fmt",
                     "pal8",
-                    # Audio (mono 11.025 kHz, 16-bit PCM)
                     "-ac",
                     TARGET_A_CHANNELS,
                     "-ar",
                     TARGET_A_RATE,
                     "-c:a",
                     "pcm_s16le",
-                    # Container
+                    "-max_interleave_delta",
+                    "0",
+                    "-use_odml",
+                    "0",
                     "-f",
                     "avi",
                     str(dst),
