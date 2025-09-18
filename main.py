@@ -9,7 +9,7 @@ from lib.common.ffmpeg_tools import resolve_ffmpeg_path
 from lib.common.os_utils import _no_console_kwargs
 
 APP_TITLE = "Pip-Boy 3000 Mk V - Media Conversion Tool"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 
 FFMPEG_CMD = resolve_ffmpeg_path()
 

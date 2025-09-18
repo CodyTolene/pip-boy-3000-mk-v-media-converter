@@ -597,7 +597,7 @@ class VideoTab(ttk.Frame):
         def worker():
             ok = True
             for idx, src in enumerate(self.files, start=1):
-                dst = Path(out_dir) / f"{src.name}.avi"
+                dst = Path(out_dir) / f"{src.stem}.avi"
                 self.log_q.put(f"[*] Converting {src.name} -> {dst.name}")
 
                 vf = self._vf_convert()
