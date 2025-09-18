@@ -89,7 +89,9 @@ class VideoTab(ttk.Frame):
 
         # Dynamic size note under the preview
         self.preview_size_var = tk.StringVar(value=f"{TARGET_W} x {TARGET_H}")
-        self.preview_note = ttk.Label(self.preview_frame, textvariable=self.preview_size_var)
+        self.preview_note = ttk.Label(
+            self.preview_frame, textvariable=self.preview_size_var
+        )
         self.preview_note.pack(side="top", pady=(6, 12))
 
         self._preview_show_text("No preview")
@@ -546,6 +548,7 @@ class VideoTab(ttk.Frame):
 
     def _peek_custom_size(self) -> tuple[int, int]:
         """Parse custom W and H without mutating StringVars."""
+
         def _parse(v: str, fallback: int) -> int:
             try:
                 n = int(v.strip())
@@ -557,7 +560,9 @@ class VideoTab(ttk.Frame):
             except Exception:
                 return fallback
 
-        return _parse(self.custom_w_var.get(), TARGET_W), _parse(self.custom_h_var.get(), TARGET_H)
+        return _parse(self.custom_w_var.get(), TARGET_W), _parse(
+            self.custom_h_var.get(), TARGET_H
+        )
 
     def _current_target_size(self) -> tuple[int, int]:
         """Report intended output dimensions based on mode."""
