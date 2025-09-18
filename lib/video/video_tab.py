@@ -59,7 +59,7 @@ class VideoTab(ttk.Frame):
         self._preview_tmp: Path | None = None
         self._preview_after_id: str | None = None
         self._preview_target: Path | None = None
-        self._preview_img = None  # keep reference so Tk doesn't GC it
+        self._preview_img = None  # keep reference so Tk does not GC it
 
         # Custom size state
         self.custom_w_var = tk.StringVar(value=str(TARGET_W))
@@ -86,8 +86,12 @@ class VideoTab(ttk.Frame):
             highlightbackground="#a0a0a0",
         )
         self.preview_canvas.pack(side="top")
-        self.preview_note = ttk.Label(self.preview_frame, text="(Preview)")
+
+        # Dynamic size note under the preview
+        self.preview_size_var = tk.StringVar(value=f"{TARGET_W} x {TARGET_H}")
+        self.preview_note = ttk.Label(self.preview_frame, textvariable=self.preview_size_var)
         self.preview_note.pack(side="top", pady=(6, 12))
+
         self._preview_show_text("No preview")
 
         # File list
@@ -165,6 +169,7 @@ class VideoTab(ttk.Frame):
                 self._show_preview()
                 self._schedule_preview_update(debounce=True)
             self._toggle_custom_inputs()
+            self._update_preview_note()
 
         for label, val in [
             ("Contain / Letterbox", "contain"),
@@ -217,8 +222,9 @@ class VideoTab(ttk.Frame):
         self.after(75, self._drain_log)
         self.update_controls()
 
-        # Initialize visibility
+        # Initialize visibility and size note
         self._toggle_custom_inputs()
+        self._update_preview_note()
 
     def _append_log(self, text: str):
         self.log_text.configure(state="normal")
@@ -396,6 +402,7 @@ class VideoTab(ttk.Frame):
         self.open_dir_btn.config(state=("normal" if open_ok else "disabled"))
 
         self._toggle_empty_hint()
+        self._update_preview_note()
 
     def add_files(self):
         try:
@@ -536,6 +543,32 @@ class VideoTab(ttk.Frame):
         self.custom_w_var.set(str(w))
         self.custom_h_var.set(str(h))
         return w, h
+
+    def _peek_custom_size(self) -> tuple[int, int]:
+        """Parse custom W and H without mutating StringVars."""
+        def _parse(v: str, fallback: int) -> int:
+            try:
+                n = int(v.strip())
+                if n <= 0:
+                    return fallback
+                if n % 2 == 1:
+                    n -= 1
+                return n if n > 0 else fallback
+            except Exception:
+                return fallback
+
+        return _parse(self.custom_w_var.get(), TARGET_W), _parse(self.custom_h_var.get(), TARGET_H)
+
+    def _current_target_size(self) -> tuple[int, int]:
+        """Report intended output dimensions based on mode."""
+        if (self.scale_mode.get() or "").lower() == "custom":
+            return self._peek_custom_size()
+        return TARGET_W, TARGET_H
+
+    def _update_preview_note(self):
+        """Refresh the label text under the preview to show W x H."""
+        w, h = self._current_target_size()
+        self.preview_size_var.set(f"{w} x {h}")
 
     def start_convert_all(self):
         if self.is_running:
